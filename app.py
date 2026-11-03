@@ -76,8 +76,8 @@ def load_quotes():
         if c not in df.columns:
             df[c] = None
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["offer"]).copy()
-    df["bid"] = df["bid"].fillna(df["offer"])
+    df = df[df["offer"] > 0].copy()                  # 無報價（0 或空白）的債券不列入
+    df.loc[~(df["bid"] > 0), "bid"] = df["offer"]   # Bid 缺漏時以 Offer 代替
     df["ccy"] = df["ccy"].fillna("USD").astype(str).str.strip().str.upper()
     df["label"] = (df["bond_name"].astype(str) + "｜" + df["ccy"] + "｜到期 " + df["maturity"].astype(str)
                    + "｜" + df["isin"].astype(str))
@@ -228,7 +228,7 @@ if new_sel:
                                 step=10000.0, format="%.0f", key=f"alloc_{q['isin']}")
         f = fx[q["ccy"]]
         min_amt = float(q["min_amt"]) if not pd.isna(q["min_amt"]) else 0.0
-        face = math.floor(alloc / f / (q["offer"] / 100) / 1000) * 1000
+        face = math.floor(alloc / f / (q["offer"] / 100) / 1000) * 1000 if f > 0 else 0
         note = ""
         if min_amt and face < min_amt:
             note = f"未達最低申購 {fmt(min_amt)}"
