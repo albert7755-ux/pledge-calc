@@ -86,11 +86,19 @@ def load_quotes():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_fx(ccy):
+def _fx_table():
+    """一次抓全部匯率（以 USD 為基準），5 秒逾時，失敗回空表"""
     try:
-        import yfinance as yf
-        h = yf.Ticker("TWD=X" if ccy == "USD" else f"{ccy}TWD=X").history(period="5d")
-        v = float(h["Close"].dropna().iloc[-1])
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=5)
+        return r.json().get("rates", {}) or {}
+    except Exception:
+        return {}
+
+
+def fetch_fx(ccy):
+    rates = _fx_table()
+    try:
+        v = rates["TWD"] / rates[ccy]
         return round(v, 4) if v > 0 else None
     except Exception:
         return None
