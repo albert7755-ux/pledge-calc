@@ -211,13 +211,22 @@ if not orig_sel:
     st.info("先選客戶要拿來設質的債券。")
     st.stop()
 
+faces = st.session_state.setdefault("faces", {})
+ed_in = pd.DataFrame([{
+    "債券": quotes.loc[l, "bond_name"], "幣別": quotes.loc[l, "ccy"],
+    "面額": float(faces.get(quotes.loc[l, "isin"],
+                            max(0 if pd.isna(quotes.loc[l, "min_amt"]) else quotes.loc[l, "min_amt"], 10000))),
+} for l in orig_sel])
+st.caption("✏️ 直接在表格的「面額」欄輸入金額（外幣面額）")
+ed_out = st.data_editor(
+    ed_in, hide_index=True, width="stretch", key="orig_ed_" + "_".join(quotes.loc[l, "isin"] for l in orig_sel),
+    column_config={"債券": st.column_config.TextColumn(disabled=True),
+                   "幣別": st.column_config.TextColumn(disabled=True, width="small"),
+                   "面額": st.column_config.NumberColumn(min_value=0, step=1000, format="localized", required=True)})
 orig_rows, ltv_missing = [], []
-for l in orig_sel:
+for l, face in zip(orig_sel, ed_out["面額"].fillna(0).astype(float)):
     q = quotes.loc[l]
-    step = 1000.0
-    face = st.number_input(f"{q['bond_name']}（{q['ccy']}）面額", min_value=0.0,
-                           value=float(max(0 if pd.isna(q["min_amt"]) else q["min_amt"], 10000)), step=step, format="%.0f",
-                           key=f"face_{q['isin']}")
+    faces[q["isin"]] = face
     ltv = q["ltv"]
     if pd.isna(ltv):
         ltv_missing.append(q["bond_name"])
@@ -277,12 +286,48 @@ for l in new_sel:
 
 new_rows = []
 if new_sel:
-    left = loan
-    for i, l in enumerate(new_sel):
+    mode = st.radio("投入金額分配方式", ["平均分配", "依比例分配", "自訂金額"], horizontal=True, key="alloc_mode")
+    pcts = st.session_state.setdefault("pcts", {})
+    amts = st.session_state.setdefault("amts", {})
+    isins = [quotes.loc[l, "isin"] for l in new_sel]
+    n_sel = len(new_sel)
+    eq = math.floor(loan / n_sel / 10000) * 10000
+    if mode == "平均分配":
+        a_list = [float(eq)] * n_sel
+        p_list = [a / loan * 100 if loan else 0 for a in a_list]
+        st.caption("動用資金平均拆給每一檔（以萬元為單位），結果見下表")
+    else:
+        col = "比例(%)" if mode == "依比例分配" else "投入金額（台幣）"
+        if mode == "依比例分配":
+            base = [round(100 / n_sel, 1)] * n_sel
+            base[-1] = round(100 - sum(base[:-1]), 1)          # 讓預設比例剛好加總 100%
+            dflt = [float(pcts[i]) for i in isins] if all(i in pcts for i in isins) else base
+        else:
+            dflt = [float(amts.get(i, eq)) for i in isins]
+        st.caption("✏️ 在「比例(%)」欄輸入各檔比例，金額會自動算" if mode == "依比例分配"
+                   else "✏️ 在「投入金額」欄直接輸入各檔金額")
+        ed2_out = st.data_editor(
+            pd.DataFrame({"債券": [quotes.loc[l, "bond_name"] for l in new_sel], col: dflt}),
+            hide_index=True, width="stretch", key=f"new_ed_{mode}_" + "_".join(isins),
+            column_config={"債券": st.column_config.TextColumn(disabled=True),
+                           col: (st.column_config.NumberColumn(min_value=0, max_value=100, step=5, format="%.1f")
+                                 if mode == "依比例分配" else
+                                 st.column_config.NumberColumn(min_value=0, step=10000, format="localized"))})
+        vals = ed2_out[col].fillna(0).astype(float).tolist()
+        if mode == "依比例分配":
+            p_list = vals
+            a_list = [math.floor(loan * p / 100 / 1000) * 1000 for p in p_list]
+            if abs(sum(p_list) - 100) > 0.05:
+                st.warning(f"比例合計為 {sum(p_list):.1f}%，{'超過' if sum(p_list) > 100 else '未滿'} 100%。")
+        else:
+            a_list = vals
+            p_list = [a / loan * 100 if loan else 0 for a in a_list]
+    for i, p_, a_ in zip(isins, p_list, a_list):
+        if mode == "依比例分配":
+            pcts[i] = round(p_, 1)                      # 只有比例模式才記住比例
+        amts[i] = a_
+    for l, alloc in zip(new_sel, a_list):
         q = quotes.loc[l]
-        dflt = math.floor(loan / len(new_sel) / 10000) * 10000
-        alloc = st.number_input(f"{q['bond_name']} 投入金額（台幣）", min_value=0.0, value=float(dflt),
-                                step=10000.0, format="%.0f", key=f"alloc_{q['isin']}")
         f = fx[q["ccy"]]
         min_amt = float(q["min_amt"]) if not pd.isna(q["min_amt"]) else 0.0
         face = math.floor(alloc / f / (q["offer"] / 100) / 1000) * 1000 if f > 0 else 0
@@ -291,16 +336,17 @@ if new_sel:
             note = f"未達最低申購 {fmt(min_amt)}"
             face = 0
         cpn = q["coupon"]
-        new_rows.append(dict(債券=q["bond_name"], 幣別=q["ccy"], Offer=q["offer"], YTM=q["ytm"],
+        new_rows.append(dict(債券=q["bond_name"], 幣別=q["ccy"], 投入_TWD=alloc, Offer=q["offer"], YTM=q["ytm"],
                              票面利率=cpn, 可買面額=face,
                              成本_TWD=face * q["offer"] / 100 * f,
                              年配息_TWD=None if pd.isna(cpn) else face * cpn / 100 * f,
                              擔保市值_TWD=face * q["bid"] / 100 * f, 備註=note))
     new = pd.DataFrame(new_rows)
     show_table(new.drop(columns=["幣別"]),
-               {"Offer": "{:.2f}", "YTM": "{:.2f}%", "票面利率": "{:.2f}%", "可買面額": "{:,.0f}",
+               {"投入_TWD": "{:,.0f}", "Offer": "{:.2f}", "YTM": "{:.2f}%", "票面利率": "{:.2f}%", "可買面額": "{:,.0f}",
                 "成本_TWD": "{:,.0f}", "年配息_TWD": "{:,.0f}", "擔保市值_TWD": "{:,.0f}"},
-               total=None if len(new) < 2 else {"債券": "合計", "成本_TWD": fmt(new["成本_TWD"].sum()),
+               total=None if len(new) < 2 else {"債券": "合計", "投入_TWD": fmt(new["投入_TWD"].sum()),
+                                                "成本_TWD": fmt(new["成本_TWD"].sum()),
                                                 "年配息_TWD": fmt(new["年配息_TWD"].sum(min_count=1)),
                                                 "擔保市值_TWD": fmt(new["擔保市值_TWD"].sum())})
     spent = new["成本_TWD"].sum()
