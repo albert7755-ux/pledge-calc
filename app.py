@@ -299,7 +299,7 @@ st.caption("下跌幅度＝債價與匯率合計的影響。借的是台幣、�
 # ───────────────────────── ⑤ 壓力測試 ─────────────────────────
 st.header("⑤ 壓力測試／一年後續約")
 c1, c2 = st.columns(2)
-p_chg = c1.slider("債價變動（%）", -40, 20, -10)
+p_chg = c1.slider("債價變動（%）", -40, 40, -10)
 usd_now = float(fx.get("USD") or fetch_fx("USD") or DEFAULT_FX["USD"])
 usd_s = c2.slider("情境美元兌台幣匯率", 27.0, 35.0, float(min(max(round(usd_now, 1), 27.0), 35.0)), 0.1,
                   format="%.1f", help="往左＝台幣升值，擔保品換算台幣變少")
