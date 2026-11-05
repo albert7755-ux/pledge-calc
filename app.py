@@ -22,6 +22,13 @@ h1, h2, h3 {{ color: {NAVY}; }}
          border-radius:10px; padding:12px 16px; margin:6px 0; }}
 .big {{ font-size:1.6rem; font-weight:700; color:{NAVY}; }}
 .muted {{ color:#6B7280; font-size:0.85rem; }}
+.tbl {{ overflow-x:auto; }}
+.tbl table {{ width:100%; border-collapse:collapse; table-layout:auto; font-size:0.82rem; background:#fff; }}
+.tbl th {{ background:#EEF2F8; color:{NAVY}; font-weight:700; padding:6px 5px; border:1px solid #E3E7EF;
+          text-align:center; line-height:1.25; }}
+.tbl td {{ padding:6px 5px; border:1px solid #E3E7EF; }}
+.tbl td.num {{ text-align:right; white-space:nowrap; }}
+.tbl tr.tot td {{ background:#FFF8E6; font-weight:700; }}
 .dash-title {{ background:{NAVY}; color:#fff; text-align:center; font-size:1.35rem; font-weight:800;
                padding:10px; border-radius:8px; margin:6px 0 12px; }}
 </style>
@@ -136,6 +143,25 @@ except Exception as e:
     st.stop()
 
 
+def show_table(df, fmts=None, total=None):
+    """不用左右捲動的精簡表格：欄寬自動縮放、表頭可換行、數字靠右"""
+    fmts = fmts or {}
+    def cell(c, v):
+        if v is None or (isinstance(v, float) and math.isnan(v)) or v == "":
+            return "—" if c in fmts else ""
+        return fmts[c].format(v) if c in fmts else str(v)
+    head = "".join(f"<th>{c.replace('_TWD', '<br>（台幣）')}</th>" for c in df.columns)
+    rows = ""
+    for _, r in df.iterrows():
+        rows += "<tr>" + "".join(
+            f'<td class="{"num" if c in fmts else ""}">{cell(c, r[c])}</td>' for c in df.columns) + "</tr>"
+    if total:
+        rows += '<tr class="tot">' + "".join(
+            f'<td class="{"num" if c in fmts else ""}">{total.get(c, "")}</td>' for c in df.columns) + "</tr>"
+    st.markdown(f'<div class="tbl"><table><thead><tr>{head}</tr></thead><tbody>{rows}</tbody></table></div>',
+                unsafe_allow_html=True)
+
+
 def fmt(v, d=0):
     return "—" if v is None or (isinstance(v, float) and math.isnan(v)) else f"{v:,.{d}f}"
 
@@ -209,10 +235,12 @@ orig = pd.DataFrame(orig_rows)
 orig_mv = orig["市值_TWD"].sum()
 max_loan = orig["可借_TWD"].sum()
 
-st.dataframe(orig.style.format({"面額": "{:,.0f}", "Bid": "{:.2f}", "LTV": "{:.0%}", "採用成數": "{:.0%}",
-                                "票面利率": "{:.3f}%", "市值_TWD": "{:,.0f}", "可借_TWD": "{:,.0f}",
-                                "年配息_TWD": "{:,.0f}"}, na_rep="—"),
-             hide_index=True, width="stretch")
+show_table(orig.drop(columns=["幣別"]).rename(columns={"採用成數": "成數"}),
+           {"面額": "{:,.0f}", "Bid": "{:.2f}", "LTV": "{:.0%}", "成數": "{:.0%}", "票面利率": "{:.2f}%",
+            "市值_TWD": "{:,.0f}", "可借_TWD": "{:,.0f}", "年配息_TWD": "{:,.0f}"},
+           total=None if len(orig) < 2 else {"債券": "合計", "市值_TWD": fmt(orig["市值_TWD"].sum()),
+                                             "可借_TWD": fmt(orig["可借_TWD"].sum()),
+                                             "年配息_TWD": fmt(orig["年配息_TWD"].sum())})
 if ltv_missing:
     st.caption("⚠️ 報價檔未提供 LTV，暫以 50% 計：" + "、".join(ltv_missing))
 
@@ -229,10 +257,10 @@ st.caption("一般信託質借只能借一次。建議**不要借滿**：隔年�
 default_loan = min(math.floor(orig_mv * 0.30 / 10000) * 10000, math.floor(max_loan / 10000) * 10000)
 loan = st.number_input("動用金額（台幣）", min_value=0.0, max_value=float(math.floor(max_loan)),
                        value=float(default_loan), step=10000.0, format="%.0f")
-use_pct = loan / orig_mv if orig_mv else 0
-st.progress(min(use_pct / MAX_RATIO, 1.0), text=f"動用成數 {use_pct:.1%}（上限 50%）")
-if use_pct > 0.40:
-    st.warning("動用成數已超過 40%，債價或匯率小幅下跌就可能接近補倉線，建議降低動用金額。")
+use_pct = loan / max_loan if max_loan else 0
+st.progress(min(use_pct, 1.0), text=f"已動用可借額度 {use_pct:.0%}（{fmt(loan)} ／ {fmt(max_loan)}）")
+if use_pct > 0.80:
+    st.warning("已動用超過可借額度的 80%，隔年續約或債價、匯率小幅下跌時，就可能需要先還款或補提擔保品，建議降低動用金額。")
 
 if loan <= 0:
     st.stop()
@@ -269,10 +297,12 @@ if new_sel:
                              年配息_TWD=None if pd.isna(cpn) else face * cpn / 100 * f,
                              擔保市值_TWD=face * q["bid"] / 100 * f, 備註=note))
     new = pd.DataFrame(new_rows)
-    st.dataframe(new.style.format({"Offer": "{:.2f}", "YTM": "{:.2f}%", "票面利率": "{:.3f}%",
-                                   "可買面額": "{:,.0f}", "成本_TWD": "{:,.0f}", "年配息_TWD": "{:,.0f}",
-                                   "擔保市值_TWD": "{:,.0f}"}, na_rep="—"),
-                 hide_index=True, width="stretch")
+    show_table(new.drop(columns=["幣別"]),
+               {"Offer": "{:.2f}", "YTM": "{:.2f}%", "票面利率": "{:.2f}%", "可買面額": "{:,.0f}",
+                "成本_TWD": "{:,.0f}", "年配息_TWD": "{:,.0f}", "擔保市值_TWD": "{:,.0f}"},
+               total=None if len(new) < 2 else {"債券": "合計", "成本_TWD": fmt(new["成本_TWD"].sum()),
+                                                "年配息_TWD": fmt(new["年配息_TWD"].sum(min_count=1)),
+                                                "擔保市值_TWD": fmt(new["擔保市值_TWD"].sum())})
     spent = new["成本_TWD"].sum()
     if spent > loan + 1:
         st.error(f"投入金額合計超過動用資金 {fmt(spent - loan)} 元，請調整。")
@@ -361,7 +391,7 @@ else:
         ["每月淨現金流", without_yr / 12, with_yr / 12],
     ], columns=["項目", "沒做（只持有原債）", "有做（質借加碼）"])
     cmp["差異"] = cmp["有做（質借加碼）"] - cmp["沒做（只持有原債）"]
-    st.dataframe(cmp.style.format({c: "{:,.0f}" for c in cmp.columns[1:]}), hide_index=True, width="stretch")
+    show_table(cmp, {c: "{:,.0f}" for c in cmp.columns[1:]})
     st.caption(f"配息率 ＝ 年淨收入 ÷ 自有本金（原設質債券市值 {fmt(base_mv)} 元）：沒做 {y0:.2%} → 有做 {y1:.2%}。"
                "以票面利率計算現金配息，未計匯率變動、前手息、手續費與信管費。")
     if new_sel and new_cpn == 0:
@@ -377,7 +407,7 @@ for L, desc in LINES:
     line_rows.append({"擔保維持率": f"{L}%", "說明": desc,
                       "擔保品市值剩下（台幣）": fmt(loan * L / 100),
                       "整體下跌幅度": "已低於" if drop <= 0 else f"{drop:.1%}"})
-st.dataframe(pd.DataFrame(line_rows), hide_index=True, width="stretch")
+show_table(pd.DataFrame(line_rows))
 st.caption("下跌幅度＝債價與匯率合計的影響。借的是台幣、擔保品是外幣，**台幣升值也會讓維持率下降**。")
 
 # ───────────────────────── ⑤ 壓力測試 ─────────────────────────
