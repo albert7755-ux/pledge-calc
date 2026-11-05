@@ -72,6 +72,8 @@ def load_quotes():
                      headers={**h, "Range": "0-4999"}, timeout=30)
     r.raise_for_status()
     df = pd.DataFrame(r.json())
+    if "prod_code" not in df.columns:
+        df["prod_code"] = None
     for c in ["offer", "bid", "ytm", "ltv", "coupon", "min_amt"]:
         if c not in df.columns:
             df[c] = None
@@ -79,9 +81,14 @@ def load_quotes():
     df = df[df["offer"] > 0].copy()                  # 無報價（0 或空白）的債券不列入
     df.loc[~(df["bid"] > 0), "bid"] = df["offer"]   # Bid 缺漏時以 Offer 代替
     df["ccy"] = df["ccy"].fillna("USD").astype(str).str.strip().str.upper()
-    df["label"] = (df["bond_name"].astype(str) + "｜" + df["ccy"] + "｜到期 " + df["maturity"].astype(str)
-                   + "｜" + df["isin"].astype(str))
-    df = df.sort_values(["ccy", "bond_name"]).drop_duplicates("isin").set_index("label")
+    code = df["prod_code"].fillna("").astype(str).str.strip()
+    df["code_show"] = code.where(code != "", df["isin"].astype(str))
+    # 產品代號如 WMBB26040007：取尾端數字（年月＋序號）排序，最新在最上面
+    df["sort_key"] = code.str.extract(r"(\d+)$")[0].fillna("0").astype("int64")
+    df["label"] = (df["code_show"] + "｜" + df["bond_name"].astype(str) + "｜" + df["ccy"]
+                   + "｜到期 " + df["maturity"].astype(str))
+    df = (df.sort_values(["sort_key", "code_show"], ascending=[False, False])
+            .drop_duplicates("isin").drop_duplicates("label").set_index("label"))
     return snap, df
 
 
@@ -139,8 +146,8 @@ if quotes["ltv"].isna().all():
 # ───────────────────────── ① 原持有債券 ─────────────────────────
 st.header("① 客戶要設質的債券")
 labels = list(quotes.index)
-orig_sel = st.multiselect("搜尋債券名稱或 ISIN（可多選）", labels, key="orig_sel",
-                          placeholder="例如：蘋果、Meta、US0378")
+orig_sel = st.multiselect("搜尋產品代號或債券名稱（可多選，最新上架在最上面）", labels, key="orig_sel",
+                          placeholder="輸入產品代號或債券名稱，例如：WMBB2604、蘋果")
 
 # ───────────────────────── 匯率／利率 ─────────────────────────
 new_sel_preview = st.session_state.get("new_sel", [])
