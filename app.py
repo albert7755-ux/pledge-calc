@@ -22,6 +22,8 @@ h1, h2, h3 {{ color: {NAVY}; }}
          border-radius:10px; padding:12px 16px; margin:6px 0; }}
 .big {{ font-size:1.6rem; font-weight:700; color:{NAVY}; }}
 .muted {{ color:#6B7280; font-size:0.85rem; }}
+.dash-title {{ background:{NAVY}; color:#fff; text-align:center; font-size:1.35rem; font-weight:800;
+               padding:10px; border-radius:8px; margin:6px 0 12px; }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -197,15 +199,19 @@ for l in orig_sel:
     else:
         eff = min(float(ltv), MAX_RATIO)
     mv = face * q["bid"] / 100 * fx[q["ccy"]]
+    ocpn = q["coupon"]
     orig_rows.append(dict(債券=q["bond_name"], 幣別=q["ccy"], 面額=face, Bid=q["bid"],
                           LTV=None if pd.isna(ltv) else float(ltv), 採用成數=eff,
-                          市值_TWD=mv, 可借_TWD=mv * eff))
+                          票面利率=None if pd.isna(ocpn) else float(ocpn),
+                          市值_TWD=mv, 可借_TWD=mv * eff,
+                          年配息_TWD=None if pd.isna(ocpn) else face * float(ocpn) / 100 * fx[q["ccy"]]))
 orig = pd.DataFrame(orig_rows)
 orig_mv = orig["市值_TWD"].sum()
 max_loan = orig["可借_TWD"].sum()
 
 st.dataframe(orig.style.format({"面額": "{:,.0f}", "Bid": "{:.2f}", "LTV": "{:.0%}", "採用成數": "{:.0%}",
-                                "市值_TWD": "{:,.0f}", "可借_TWD": "{:,.0f}"}, na_rep="—"),
+                                "票面利率": "{:.3f}%", "市值_TWD": "{:,.0f}", "可借_TWD": "{:,.0f}",
+                                "年配息_TWD": "{:,.0f}"}, na_rep="—"),
              hide_index=True, width="stretch")
 if ltv_missing:
     st.caption("⚠️ 報價檔未提供 LTV，暫以 50% 計：" + "、".join(ltv_missing))
@@ -287,17 +293,79 @@ interest = loan * rate / 100
 cpn_income = new["年配息_TWD"].sum(min_count=1) if len(new) else float("nan")
 net = None if pd.isna(cpn_income) else cpn_income - interest
 
-c1, c2, c3 = st.columns(3)
-c1.metric("擔保維持率", f"{ratio:.0f}%", status_of(ratio), delta_color="off")
-c2.metric("年利息（台幣）", fmt(interest))
-c3.metric("新債年配息（台幣）", fmt(cpn_income))
-if net is not None:
-    st.markdown(f'<div class="card">每年淨增加收益（配息 − 利息）'
-                f'<div class="big">{fmt(net)} 元</div>'
-                f'<span class="muted">約每月 {fmt(net / 12)} 元；未計匯率變動、手續費與信管費</span></div>',
-                unsafe_allow_html=True)
-elif new_sel:
-    st.caption("今日報價尚未帶入票面利率，重新上傳今日報價檔後即可顯示配息。")
+orig_cpn = orig["年配息_TWD"].sum(min_count=1)
+new_cpn = 0.0 if pd.isna(cpn_income) else float(cpn_income)
+base_mv = orig_mv                                   # 自有本金＝原設質債券市值
+if pd.isna(orig_cpn):
+    st.warning("今日報價尚未帶入票面利率，無法計算配息比較。請重新上傳今日報價檔。")
+else:
+    without_yr = float(orig_cpn)                    # 沒做：只領原債配息
+    with_yr = without_yr + new_cpn - interest        # 有做：原債＋新債配息－借款利息
+    y0, y1 = without_yr / base_mv, with_yr / base_mv
+
+    st.markdown(f'<div class="dash-title">投資組合效益分析－信託質借版</div>', unsafe_allow_html=True)
+    import altair as alt
+    BLUE, ORANGE = "#3E6A8A", "#E08A3C"
+    d1, d2 = st.columns(2)
+    with d1:
+        st.markdown("**【資金架構】自有 vs 融資**")
+        cap = pd.DataFrame({"x": ["資金"] * 2, "項目": ["自有本金", "銀行融資"],
+                            "金額": [base_mv, loan], "序": [1, 2]})
+        bars = alt.Chart(cap).mark_bar(size=110).encode(
+            x=alt.X("x:N", axis=None), y=alt.Y("金額:Q", stack="zero", axis=alt.Axis(format=",.0f", title=None)),
+            color=alt.Color("項目:N", scale=alt.Scale(domain=["自有本金", "銀行融資"], range=[BLUE, ORANGE]),
+                            legend=alt.Legend(orient="bottom", title=None)),
+            order=alt.Order("序:Q"), tooltip=["項目", alt.Tooltip("金額:Q", format=",.0f")])
+        txt = alt.Chart(cap).mark_text(color="white", fontWeight="bold", fontSize=14).encode(
+            x="x:N", y=alt.Y("金額:Q", stack="zero", bandPosition=0.5), detail="項目:N",
+            order=alt.Order("序:Q"), text=alt.Text("金額:Q", format=",.0f"))
+        st.altair_chart((bars + txt).properties(height=260), width="stretch")
+    with d2:
+        st.markdown("**【效益升級】配息率比較**")
+        yd = pd.DataFrame({"情境": ["原始配息", "質借加碼後"], "配息率": [y0, y1]})
+        hb = alt.Chart(yd).mark_bar(size=44).encode(
+            y=alt.Y("情境:N", sort=["質借加碼後", "原始配息"], title=None),
+            x=alt.X("配息率:Q", axis=alt.Axis(format=".1%", title=None),
+                    scale=alt.Scale(domain=[0, max(y0, y1, 0.01) * 1.2])),
+            color=alt.Color("情境:N", scale=alt.Scale(domain=["質借加碼後", "原始配息"], range=[ORANGE, BLUE]),
+                            legend=None))
+        ht = hb.mark_text(align="right", dx=-8, fontWeight="bold", fontSize=15).encode(
+            text=alt.Text("配息率:Q", format=".2%"), color=alt.value("white"))
+        st.altair_chart((hb + ht).properties(height=260), width="stretch")
+
+    d3, d4 = st.columns(2)
+    lit = ("#2E9E5B" if ratio > 160 else "#E3B23C" if ratio > 140 else "#E08A3C" if ratio > 130 else "#D64545")
+    lights = "".join(
+        f'<span style="display:inline-block;width:30px;height:30px;border-radius:50%;margin:4px;'
+        f'background:{c if c == lit else "#E5E7EB"};border:2px solid #9CA3AF"></span>'
+        for c in ["#2E9E5B", "#E3B23C", "#E08A3C", "#D64545"])
+    with d3:
+        st.markdown(f'''<div class="card"><b>【風險監控】擔保維持率</b><br>
+<div style="display:flex;align-items:center;gap:18px;margin-top:8px">
+<div style="background:#374151;border-radius:12px;padding:6px 4px;width:44px;text-align:center">{lights}</div>
+<div><span class="muted">當前維持率</span><div class="big" style="font-size:2.4rem">{ratio:.0f}%</div>
+<div>{status_of(ratio)}</div></div></div></div>''', unsafe_allow_html=True)
+    with d4:
+        st.markdown(f'''<div class="card"><b>【現金流預估】每月入帳</b><br>
+<span class="muted">每月預估淨現金流</span>
+<div style="font-size:2.6rem;font-weight:800;color:{GOLD}">${with_yr / 12:,.0f}</div>
+<b>月領息效益增加</b>　<span style="font-size:1.3rem">{(with_yr - without_yr) / 12:+,.0f}</span></div>''',
+                    unsafe_allow_html=True)
+
+    st.subheader("有做 vs 沒做")
+    cmp = pd.DataFrame([
+        ["原債年配息", without_yr, without_yr],
+        ["新債年配息", 0.0, new_cpn],
+        ["借款年利息", 0.0, -interest],
+        ["年淨收入", without_yr, with_yr],
+        ["每月淨現金流", without_yr / 12, with_yr / 12],
+    ], columns=["項目", "沒做（只持有原債）", "有做（質借加碼）"])
+    cmp["差異"] = cmp["有做（質借加碼）"] - cmp["沒做（只持有原債）"]
+    st.dataframe(cmp.style.format({c: "{:,.0f}" for c in cmp.columns[1:]}), hide_index=True, width="stretch")
+    st.caption(f"配息率 ＝ 年淨收入 ÷ 自有本金（原設質債券市值 {fmt(base_mv)} 元）：沒做 {y0:.2%} → 有做 {y1:.2%}。"
+               "以票面利率計算現金配息，未計匯率變動、前手息、手續費與信管費。")
+    if new_sel and new_cpn == 0:
+        st.caption("⚠️ 新債年配息為 0：可能是投入金額未達最低申購，或報價檔沒有票面利率。")
 
 st.caption("擔保維持率 ＝ 設質信託受益權總市價 ÷ 現放餘額 × 100%"
            + ("（含新買債券）" if pledge_new else "（僅原設質債券）"))
