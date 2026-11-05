@@ -25,6 +25,22 @@ h1, h2, h3 {{ color: {NAVY}; }}
 </style>
 """, unsafe_allow_html=True)
 
+# 浮水印：滿版斜向重複文字，螢幕與列印都會出現（列印時每一頁都有）
+_WM = "僅供內部教育訓練使用　請勿外流"
+st.markdown(
+    '<div class="wm">' + "".join(f"<span>{_WM}</span>" for _ in range(60)) + "</div>"
+    + """
+<style>
+.wm { position:fixed; inset:-30vh -30vw; z-index:999999; pointer-events:none; user-select:none;
+      display:grid; grid-template-columns:repeat(5, 1fr); gap:90px 40px;
+      transform:rotate(-30deg); align-content:center; justify-items:center; }
+.wm span { font-size:22px; font-weight:700; color:rgba(11,42,91,0.09); white-space:nowrap; }
+@media print {
+  .wm { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .wm span { color:rgba(11,42,91,0.16); }
+}
+</style>""", unsafe_allow_html=True)
+
 MAX_RATIO = 0.50            # 一般信託質借成數上限
 LINES = [                   # 擔保維持率門檻
     (170, "補足後須達"),
